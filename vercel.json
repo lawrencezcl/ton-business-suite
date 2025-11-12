@@ -1,0 +1,1 @@
+{"name": "ton-business-suite", "version": 2, "builds": [{"src": "services/api-gateway/src/simple-index.js", "use": "@vercel/node"}], "routes": [{"src": "/(.*)", "dest": "/services/api-gateway/src/simple-index.js"}], "env": {"NODE_ENV": "production"}, "regions": ["iad1"]}
