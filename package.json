@@ -1,0 +1,77 @@
+{
+  "name": "ton-business-suite",
+  "version": "1.0.0",
+  "description": "Enterprise-grade Web3 infrastructure solution based on TON blockchain for Dubai market",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "services/*",
+    "contracts/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build:workspaces",
+    "build:workspaces": "npm run build:services && npm run build:contracts && npm run build:apps",
+    "build:services": "cd services && npm run build:all",
+    "build:contracts": "cd contracts && npm run build:all",
+    "build:apps": "cd apps && npm run build:all",
+    "dev": "npm run dev:workspaces",
+    "dev:workspaces": "concurrently \"npm run dev:services\" \"npm run dev:apps\"",
+    "dev:services": "cd services && npm run dev:all",
+    "dev:apps": "cd apps && npm run dev:all",
+    "test": "npm run test:workspaces",
+    "test:workspaces": "npm run test:services && npm run test:contracts && npm run test:apps",
+    "test:services": "cd services && npm run test:all",
+    "test:contracts": "cd contracts && npm run test:all",
+    "test:apps": "cd apps && npm run test:all",
+    "lint": "eslint . --ext .ts,.tsx,.js,.jsx",
+    "lint:fix": "eslint . --ext .ts,.tsx,.js,.jsx --fix",
+    "clean": "npm run clean:workspaces",
+    "clean:workspaces": "rimraf **/node_modules **/dist **/build **/.next",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
+    "type-check": "tsc --noEmit",
+    "docker:build": "docker-compose build",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "deploy:testnet": "npm run deploy:contracts:testnet && npm run deploy:services:testnet",
+    "deploy:mainnet": "npm run deploy:contracts:mainnet && npm run deploy:services:mainnet"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.1",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "concurrently": "^8.2.0",
+    "eslint": "^8.45.0",
+    "eslint-config-prettier": "^8.8.0",
+    "eslint-plugin-import": "^2.28.0",
+    "eslint-plugin-prettier": "^5.0.0",
+    "eslint-plugin-react": "^7.33.0",
+    "prettier": "^3.0.0",
+    "rimraf": "^5.0.0",
+    "typescript": "^5.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "keywords": [
+    "ton",
+    "blockchain",
+    "web3",
+    "telegram",
+    "mini-app",
+    "dubai",
+    "payments",
+    "loyalty",
+    "tipping"
+  ],
+  "author": "TON Business Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/ton-business-suite.git"
+  },
+  "dependencies": {
+    "express-rate-limit": "^8.2.1"
+  }
+}

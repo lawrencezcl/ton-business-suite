@@ -1,0 +1,503 @@
+;; TON Payment Escrow Smart Contract
+;; Secure payment handling with dispute resolution
+;; Supports payment confirmations, refunds, and escrow releases
+
+#include "stdlib.fc";
+#include "op-codes.fc";
+
+;; Global variables
+global int merchant_id;             ;; Merchant ID for the payment
+global int customer_id;             ;; Customer ID (optional)
+global int payment_amount;          ;; Payment amount in nanoTON
+global int escrow_amount;           ;; Amount held in escrow
+global int fee_amount;              ;; Platform fee
+global int status;                  ;; Current payment status
+global int admin_address;           ;; Admin/merchant address
+global int customer_address;        ;; Customer wallet address
+global int merchant_address;        ;; Merchant wallet address
+global int created_at;              ;; Payment creation timestamp
+global int expires_at;              ;; Expiration timestamp
+global int paused;                  ;; Emergency pause flag
+
+;; Payment metadata and settings
+global cell payment_metadata;       ;; Payment order details
+global cell payment_settings;       ;; Escrow-specific settings
+global int dispute_raised;          ;; Whether dispute is active
+global int refund_policy;           ;; Refund policy configuration
+global int kyc_required;            ;; Whether KYC verification is required
+
+;; Dispute resolution
+global cell dispute_info;           ;; Dispute details and timeline
+global int arbitrator_address;      ;; Designated arbitrator
+global cell resolution_evidence;    ;; Evidence and resolution data
+
+;; Compliance and audit
+global int compliance_checks;       ;; Compliance verification status
+global cell audit_log;              ;; Audit trail for the transaction
+global int regulatory_reporting;    ;; Whether transaction needs reporting
+
+;; Constants
+const int PAYMENT_TIMEOUT = 86400;  ;; 24 hours in seconds
+const int DISPUTE_TIMEOUT = 604800; ;; 7 days in seconds
+const int MAX_ESCROW_FEE = 5000000; ;; 5 TON maximum fee
+const int MIN_ESCROW_AMOUNT = 10000000; ;; 10 TON minimum escrow
+
+;; Status definitions
+const int STATUS_INITIATED = 1;
+const int STATUS_ESCROWED = 2;
+const int STATUS_CONFIRMED = 3;
+const int STATUS_DELIVERED = 4;
+const int STATUS_REFUNDED = 5;
+const int STATUS_DISPUTED = 6;
+const int STATUS_RESOLVED = 7;
+const int STATUS_CANCELLED = 8;
+
+;; Storage scheme:
+;; storage[0] = merchant_id
+;; storage[1] = customer_id
+;; storage[2] = payment_amount
+;; storage[3] = escrow_amount
+;; storage[4] = fee_amount
+;; storage[5] = status
+;; storage[6] = admin_address
+;; storage[7] = customer_address
+;; storage[8] = merchant_address
+;; storage[9] = created_at
+;; storage[10] = expires_at
+;; storage[11] = paused
+;; storage[12] = payment_metadata
+;; storage[13] = payment_settings
+;; storage[14] = dispute_raised
+;; storage[15] = refund_policy
+;; storage[16] = kyc_required
+;; storage[17] = dispute_info
+;; storage[18] = arbitrator_address
+;; storage[19] = resolution_evidence
+;; storage[20] = compliance_checks
+;; storage[21] = audit_log
+;; storage[22] = regulatory_reporting
+
+;; Main message handler
+() recv_internal(int msg_value, cell in_msg, slice in_msg_body) impure {
+  var cs = in_msg.begin_parse();
+  var flags = cs~load_uint(4);
+
+  if (flags & 1) {
+    return ();
+  }
+
+  slice sender_addr = cs~load_msg_addr();
+  int op = in_msg_body~load_uint(32);
+
+  if (op == op::init_payment) {
+    ;; Initialize payment escrow
+    int payment_id = in_msg_body~load_uint(64);
+    int payment_amount_param = in_msg_body~load_uint(256);
+    cell metadata = in_msg_body~load_ref();
+    
+    init_payment(sender_addr, payment_id, payment_amount_param, metadata);
+    return ();
+  }
+
+  if (op == op::confirm_payment) {
+    ;; Customer confirms payment
+    int payment_id = in_msg_body~load_uint(64);
+    
+    confirm_payment(sender_addr, payment_id);
+    return ();
+  }
+
+  if (op == op::cancel_payment) {
+    ;; Cancel payment before confirmation
+    int payment_id = in_msg_body~load_uint(64);
+    
+    cancel_payment(sender_addr, payment_id);
+    return ();
+  }
+
+  if (op == op::release_escrow) {
+    ;; Release escrow to merchant
+    int payment_id = in_msg_body~load_uint(64);
+    
+    release_escrow(sender_addr, payment_id);
+    return ();
+  }
+
+  if (op == op::refund_payment) {
+    ;; Refund payment to customer
+    int payment_id = in_msg_body~load_uint(64);
+    int refund_amount = in_msg_body~load_uint(256);
+    
+    refund_payment(sender_addr, payment_id, refund_amount);
+    return ();
+  }
+
+  if (op == op::dispute_payment) {
+    ;; Raise dispute
+    int payment_id = in_msg_body~load_uint(64);
+    cell dispute_details = in_msg_body~load_ref();
+    
+    dispute_payment(sender_addr, payment_id, dispute_details);
+    return ();
+  }
+
+  if (op == op::resolve_dispute) {
+    ;; Resolve dispute (arbitrator only)
+    int payment_id = in_msg_body~load_uint(64);
+    int resolution_type = in_msg_body~load_uint(32);  ;; 1 = refund, 2 = release
+    cell resolution_details = in_msg_body~load_ref();
+    
+    resolve_dispute(sender_addr, payment_id, resolution_type, resolution_details);
+    return ();
+  }
+
+  if (op == op::update_payment_metadata) {
+    ;; Update payment metadata
+    int payment_id = in_msg_body~load_uint(64);
+    cell new_metadata = in_msg_body~load_ref();
+    
+    update_payment_metadata(sender_addr, payment_id, new_metadata);
+    return ();
+  }
+
+  if (op == op::emergency_pause) {
+    ;; Emergency pause (admin only)
+    emergency_pause(sender_addr);
+    return ();
+  }
+
+  if (op == op::unpause) {
+    ;; Unpause contract (admin only)
+    unpause(sender_addr);
+    return ();
+  }
+}
+
+;; Initialize payment escrow
+() init_payment(slice sender, int payment_id, int amount, cell metadata) impure inline {
+  throw_unless(400, amount >= MIN_ESCROW_AMOUNT);
+  throw_unless(401, equal_slices(sender, admin_address));
+  throw_if(403, paused);
+  
+  payment_amount = amount;
+  escrow_amount = amount;
+  fee_amount = calculate_fee(amount);
+  
+  payment_metadata = metadata;
+  customer_address = begin_cell().store_uint(0, 256).end_cell().begin_parse();  ;; Unknown yet
+  merchant_address = sender;
+  
+  status = STATUS_INITIATED;
+  created_at = now();
+  expires_at = created_at + PAYMENT_TIMEOUT;
+  
+  ;; Default settings
+  payment_settings = begin_cell()
+    .store_uint(0, 1)  ;; Manual confirmation
+    .store_uint(1, 1)  ;; Auto-release enabled
+    .store_uint(3600, 32)  ;; Auto-release after 1 hour
+    .end_cell();
+  
+  dispute_raised = false;
+  refund_policy = 0;  ;; No refunds until delivery
+  kyc_required = true;
+  
+  ;; Initialize audit log
+  audit_log = begin_cell()
+    .store_uint(now(), 64)
+    .store_uint(op::init_payment, 32)
+    .store_uint(amount, 256)
+    .end_cell();
+  
+  ;; Emit initialization event
+  emit_log("payment_initialized", [payment_id, amount], [metadata]);
+}
+
+;; Customer confirms payment
+() confirm_payment(slice sender, int payment_id) impure inline {
+  throw_unless(402, equal_slices(sender, customer_address) | equal_slices(sender, admin_address));
+  throw_unless(404, status == STATUS_INITIATED);
+  
+  status = STATUS_ESCROWED;
+  
+  ;; Update audit log
+  add_to_audit_log(now(), op::confirm_payment, 0);
+  
+  ;; Check if auto-release is enabled
+  slice settings_slice = payment_settings.begin_parse();
+  int auto_release = settings_slice~load_uint(1);
+  int auto_release_time = settings_slice~load_uint(32);
+  
+  if (auto_release) {
+    expires_at = now() + auto_release_time;
+  }
+  
+  ;; Emit confirmation event
+  emit_log("payment_confirmed", [payment_id], []);
+}
+
+;; Cancel payment
+() cancel_payment(slice sender, int payment_id) impure inline {
+  throw_unless(401, equal_slices(sender, admin_address) | equal_slices(sender, customer_address));
+  throw_unless(404, status == STATUS_INITIATED);
+  
+  status = STATUS_CANCELLED;
+  
+  ;; Refund if already escrowed
+  if (msg_value > 0) {
+    send_raw_message(begin_cell()
+      .store_uint(0x18, 6)
+      .store_slice(customer_address)
+      .store_coins(msg_value)
+      .store_uint(0, 107)
+      .end_cell(), 1);
+  }
+  
+  ;; Update audit log
+  add_to_audit_log(now(), op::cancel_payment, 0);
+  
+  ;; Emit cancellation event
+  emit_log("payment_cancelled", [payment_id], []);
+}
+
+;; Release escrow to merchant
+() release_escrow(slice sender, int payment_id) impure inline {
+  throw_unless(401, equal_slices(sender, admin_address) | equal_slices(sender, customer_address));
+  throw_unless(404, status == STATUS_ESCROWED);
+  throw_if(405, now() > expires_at);  ;; Not expired
+  
+  ;; Calculate amounts
+  int merchant_amount = escrow_amount - fee_amount;
+  
+  ;; Transfer to merchant
+  send_raw_message(begin_cell()
+    .store_uint(0x18, 6)
+    .store_slice(merchant_address)
+    .store_coins(merchant_amount)
+    .store_uint(0, 107)
+    .end_cell(), 1);
+  
+  ;; Transfer fee to platform
+  send_raw_message(begin_cell()
+    .store_uint(0x18, 6)
+    .store_slice(begin_cell().store_uint(admin_address, 256).end_cell().begin_parse())
+    .store_coins(fee_amount)
+    .store_uint(0, 107)
+    .end_cell(), 1);
+  
+  status = STATUS_DELIVERED;
+  
+  ;; Update audit log
+  add_to_audit_log(now(), op::release_escrow, merchant_amount);
+  
+  ;; Emit release event
+  emit_log("escrow_released", [payment_id, merchant_amount], []);
+}
+
+;; Refund payment to customer
+() refund_payment(slice sender, int payment_id, int refund_amount) impure inline {
+  throw_unless(401, equal_slices(sender, admin_address));
+  throw_unless(404, status == STATUS_ESCROWED | status == STATUS_DISPUTED);
+  throw_unless(406, refund_amount <= escrow_amount);
+  
+  ;; Transfer refund to customer
+  send_raw_message(begin_cell()
+    .store_uint(0x18, 6)
+    .store_slice(customer_address)
+    .store_coins(refund_amount)
+    .store_uint(0, 107)
+    .end_cell(), 1);
+  
+  escrow_amount -= refund_amount;
+  
+  if (escrow_amount == 0) {
+    status = STATUS_REFUNDED;
+  }
+  
+  ;; Update audit log
+  add_to_audit_log(now(), op::refund_payment, refund_amount);
+  
+  ;; Emit refund event
+  emit_log("payment_refunded", [payment_id, refund_amount], []);
+}
+
+;; Raise dispute
+() dispute_payment(slice sender, int payment_id, cell dispute_details) impure inline {
+  throw_unless(402, equal_slices(sender, customer_address) | equal_slices(sender, merchant_address));
+  throw_unless(404, status == STATUS_ESCROWED);
+  throw_if(407, dispute_raised);
+  
+  dispute_raised = true;
+  status = STATUS_DISPUTED;
+  dispute_info = dispute_details;
+  
+  ;; Extend timeout for dispute resolution
+  expires_at = now() + DISPUTE_TIMEOUT;
+  
+  ;; Update audit log
+  add_to_audit_log(now(), op::dispute_payment, 0);
+  
+  ;; Emit dispute event
+  emit_log("dispute_raised", [payment_id], [dispute_details]);
+}
+
+;; Resolve dispute
+() resolve_dispute(slice sender, int payment_id, int resolution_type, cell resolution_details) impure inline {
+  throw_unless(408, equal_slices(sender, arbitrator_address) | equal_slices(sender, admin_address));
+  throw_unless(404, status == STATUS_DISPUTED);
+  
+  resolution_evidence = resolution_details;
+  
+  if (resolution_type == 1) {
+    ;; Refund to customer
+    send_raw_message(begin_cell()
+      .store_uint(0x18, 6)
+      .store_slice(customer_address)
+      .store_coins(escrow_amount)
+      .store_uint(0, 107)
+      .end_cell(), 1);
+    
+    status = STATUS_REFUNDED;
+    
+  } else if (resolution_type == 2) {
+    ;; Release to merchant
+    int merchant_amount = escrow_amount - fee_amount;
+    
+    send_raw_message(begin_cell()
+      .store_uint(0x18, 6)
+      .store_slice(merchant_address)
+      .store_coins(merchant_amount)
+      .store_uint(0, 107)
+      .end_cell(), 1);
+    
+    send_raw_message(begin_cell()
+      .store_uint(0x18, 6)
+      .store_slice(begin_cell().store_uint(admin_address, 256).end_cell().begin_parse())
+      .store_coins(fee_amount)
+      .store_uint(0, 107)
+      .end_cell(), 1);
+    
+    status = STATUS_DELIVERED;
+  }
+  
+  dispute_raised = false;
+  
+  ;; Update audit log
+  add_to_audit_log(now(), op::resolve_dispute, resolution_type);
+  
+  ;; Emit resolution event
+  emit_log("dispute_resolved", [payment_id, resolution_type], [resolution_details]);
+}
+
+;; Update payment metadata
+() update_payment_metadata(slice sender, int payment_id, cell new_metadata) impure inline {
+  throw_unless(401, equal_slices(sender, admin_address));
+  throw_if(403, paused);
+  
+  payment_metadata = new_metadata;
+  
+  ;; Update audit log
+  add_to_audit_log(now(), op::update_payment_metadata, 0);
+  
+  ;; Emit metadata update event
+  emit_log("payment_metadata_updated", [payment_id], [new_metadata]);
+}
+
+;; Emergency pause
+() emergency_pause(slice sender) impure inline {
+  throw_unless(401, equal_slices(sender, admin_address));
+  
+  paused = true;
+  
+  ;; Emit pause event
+  emit_log("payment_contract_paused", [0], []);
+}
+
+;; Unpause contract
+() unpause(slice sender) impure inline {
+  throw_unless(401, equal_slices(sender, admin_address));
+  
+  paused = false;
+  
+  ;; Emit unpause event
+  emit_log("payment_contract_unpaused", [0], []);
+}
+
+;; Helper functions
+
+;; Calculate platform fee
+int calculate_fee(int amount) impure inline {
+  int fee_rate = 500;  ;; 0.5% fee (500 basis points)
+  int calculated_fee = (amount * fee_rate) / 100000;
+  
+  if (calculated_fee > MAX_ESCROW_FEE) {
+    calculated_fee = MAX_ESCROW_FEE;
+  }
+  
+  return calculated_fee;
+}
+
+;; Add entry to audit log
+() add_to_audit_log(int timestamp, int operation, int amount) impure inline {
+  cell audit_entry = begin_cell()
+    .store_uint(timestamp, 64)
+    .store_uint(operation, 32)
+    .store_uint(amount, 256)
+    .end_cell();
+  
+  audit_log = begin_cell()
+    .store_ref(audit_entry)
+    .store_ref(audit_log)
+    .end_cell();
+}
+
+;; Emit log event
+() emit_log(int event_type, list<int> int_params, list<cell> cell_params) impure inline {
+  cell log_data = begin_cell()
+    .store_uint(event_type, 32)
+    .store_uint(now(), 64);
+    
+  foreach (int param in int_params) {
+    log_data = log_data.store_uint(param, 256);
+  }
+  
+  foreach (cell param in cell_params) {
+    log_data = log_data.store_ref(param);
+  }
+  
+  emit(log_data);
+}
+
+;; External methods
+
+;; Get payment status
+(int) get_payment_status() method_id {
+  return status;
+}
+
+;; Get payment details
+(cell) get_payment_details() method_id {
+  return begin_cell()
+    .store_uint(payment_amount, 256)
+    .store_uint(escrow_amount, 256)
+    .store_uint(fee_amount, 256)
+    .store_uint(status, 32)
+    .store_uint(created_at, 64)
+    .store_uint(expires_at, 64)
+    .end_cell();
+}
+
+;; Check if payment can be released
+(int) can_release_escrow() method_id {
+  return (status == STATUS_ESCROWED) & (now() <= expires_at) & (~paused) ? 1 : 0;
+}
+
+;; Check if payment has expired
+(int) has_expired() method_id {
+  return (now() > expires_at) ? 1 : 0;
+}
+
+;; Get dispute status
+(int) get_dispute_status() method_id {
+  return dispute_raised ? 1 : 0;
+}

@@ -1,0 +1,103 @@
+;; Operation codes for TON Business Suite Smart Contracts
+;; Defines all operation types used across the contract ecosystem
+
+;; Loyalty Token Contract Operations
+const int op::init_merchant = 0x00000001;
+const int op::mint_points = 0x00000002;
+const int op::burn_points = 0x00000003;
+const int op::transfer_points = 0x00000004;
+const int op::redeem_points = 0x00000005;
+const int op::emergency_pause = 0x00000006;
+const int op::unpause = 0x00000007;
+const int op::update_merchant_config = 0x00000008;
+const int op::enable_cross_merchant = 0x00000009;
+const int op::get_balance = 0x0000000A;
+
+;; Payment Escrow Contract Operations
+const int op::init_payment = 0x10000001;
+const int op::confirm_payment = 0x10000002;
+const int op::cancel_payment = 0x10000003;
+const int op::refund_payment = 0x10000004;
+const int op::release_escrow = 0x10000005;
+const int op::dispute_payment = 0x10000006;
+const int op::resolve_dispute = 0x10000007;
+const int op::get_payment_status = 0x10000008;
+const int op::update_payment_metadata = 0x10000009;
+
+;; Instant Tip Transfer Contract Operations
+const int op::init_tip_transfer = 0x20000001;
+const int op::process_tip = 0x20000002;
+const int op::settle_tip = 0x20000003;
+const int op::cancel_tip = 0x20000004;
+const int op::verify_staff = 0x20000005;
+const int op::update_staff_info = 0x20000006;
+const int op::get_tip_history = 0x20000007;
+const int op::bulk_tip_settlement = 0x20000008;
+
+;; Cross-Merchant Registry Operations
+const int op::register_partnership = 0x30000001;
+const int op::activate_partnership = 0x30000002;
+const int op::deactivate_partnership = 0x30000003;
+const int op::check_interoperability = 0x30000004;
+const int op::update_partnership_rules = 0x30000005;
+const int op::get_partner_merchants = 0x30000006;
+const int op::validate_cross_transaction = 0x30000007;
+
+;; System-wide Operations
+const int op::emergency_shutdown = 0xFFFFFFFF;
+const int op::contract_upgrade = 0xFFFFFFFE;
+const int op::admin_transfer = 0xFFFFFFFD;
+const int op::get_contract_info = 0xFFFFFFFC;
+
+;; Event Types for Logging
+const int event::merchant_initialized = 0xE0000001;
+const int event::points_minted = 0xE0000002;
+const int event::points_burned = 0xE0000003;
+const int event::points_transferred = 0xE0000004;
+const int event::points_redeemed = 0xE0000005;
+const int event::contract_paused = 0xE0000006;
+const int event::contract_unpaused = 0xE0000007;
+const int event::merchant_config_updated = 0xE0000008;
+const int event::cross_merchant_enabled = 0xE0000009;
+
+const int event::payment_initialized = 0xE1000001;
+const int event::payment_confirmed = 0xE1000002;
+const int event::payment_cancelled = 0xE1000003;
+const int event::payment_refunded = 0xE1000004;
+const int event::escrow_released = 0xE1000005;
+const int event::dispute_raised = 0xE1000006;
+const int event::dispute_resolved = 0xE1000007;
+
+const int event::tip_processed = 0xE2000001;
+const int event::tip_settled = 0xE2000002;
+const int event::tip_cancelled = 0xE2000003;
+const int event::staff_verified = 0xE2000004;
+const int event::staff_updated = 0xE2000005;
+
+const int event::partnership_registered = 0xE3000001;
+const int event::partnership_activated = 0xE3000002;
+const int event::partnership_deactivated = 0xE3000003;
+const int event::cross_transaction_validated = 0xE3000004;
+
+;; Status Codes
+const int status::pending = 1;
+const int status::confirmed = 2;
+const int status::failed = 3;
+const int status::cancelled = 4;
+const int status::refunded = 5;
+const int status::disputed = 6;
+const int status::resolved = 7;
+
+;; Error Codes
+const int err::unauthorized = 401;
+const int err::contract_paused = 403;
+const int err::invalid_amount = 400;
+const int err::insufficient_balance = 404;
+const int err::invalid_reward = 405;
+const int err::invalid_merchant = 407;
+const int err::payment_not_found = 500;
+const int err::payment_already_confirmed = 501;
+const int err::escrow_not_releasable = 502;
+const int err::invalid_staff = 503;
+const int err::partnership_not_active = 504;
+const int err::cross_transaction_failed = 505;

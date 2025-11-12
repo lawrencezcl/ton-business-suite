@@ -1,0 +1,41 @@
+{
+  "name": "@ton-business/utils",
+  "version": "1.0.0",
+  "description": "Utility functions and helpers for TON Business Suite",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "jest --passWithNoTests",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "lint": "eslint src/**/*.ts",
+    "lint:fix": "eslint src/**/*.ts --fix"
+  },
+  "dependencies": {
+    "@ton-business/types": "*",
+    "crypto-js": "^4.1.1",
+    "qrcode": "^1.5.3",
+    "node-cron": "^3.0.2",
+    "axios": "^1.4.0",
+    "joi": "^17.9.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.5.0",
+    "@types/jest": "^29.5.3",
+    "@types/crypto-js": "^4.1.1",
+    "@types/qrcode": "^1.5.2",
+    "@types/node-cron": "^3.0.9",
+    "typescript": "^5.1.6",
+    "jest": "^29.6.1",
+    "ts-jest": "^29.1.1",
+    "eslint": "^8.45.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  }
+}

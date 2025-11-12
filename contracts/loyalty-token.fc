@@ -1,0 +1,410 @@
+;; TON Loyalty Token Smart Contract
+;; Implements programmable tokenized points for merchant loyalty programs
+;; Supports cross-merchant interoperability and programmable issuance rules
+
+#include "stdlib.fc";
+#include "op-codes.fc";
+
+;; Global variables
+global int admin_address;           ;; Merchant/admin wallet address
+global int paused;                  ;; Emergency pause flag
+global int total_supply;            ;; Total points issued
+global int max_mint_per_tx;         ;; Maximum points per transaction
+global int current_merchant_id;     ;; ID of merchant that deployed contract
+global int cross_merchant_enabled;  ;; Whether cross-merchant usage is enabled
+
+;; Merchant configuration
+global cell merchant_config;        ;; Merchant-specific settings
+global cell issuance_rules;         ;; Points issuance rules
+global cell redemption_catalog;     ;; Available rewards catalog
+
+;; User data
+global dict user_balances;          ;; Map of user addresses to point balances
+global dict user_metadata;          ;; Additional user metadata
+global dict transaction_history;    ;; Transaction history by user
+
+;; Constants
+const int MIN_MINT_AMOUNT = 1;
+const int MAX_REDEMPTION_AMOUNT = 1000000;
+const int EMERGENCY_PAUSE_DURATION = 86400; ;; 24 hours
+
+;; Storage scheme:
+;; storage[0] = admin_address
+;; storage[1] = paused
+;; storage[2] = total_supply
+;; storage[3] = max_mint_per_tx
+;; storage[4] = current_merchant_id
+;; storage[5] = cross_merchant_enabled
+;; storage[6] = merchant_config
+;; storage[7] = issuance_rules
+;; storage[8] = redemption_catalog
+;; storage[9] = user_balances (dictionary)
+;; storage[10] = user_metadata (dictionary)
+;; storage[11] = transaction_history (dictionary)
+
+;; Initialize contract with merchant configuration
+() recv_internal(int msg_value, cell in_msg, slice in_msg_body) impure {
+  var cs = in_msg.begin_parse();
+  var flags = cs~load_uint(4);  ;; Parse flags
+
+  if (flags & 1) {
+    ;; Ignore bounce
+    return ();
+  }
+
+  slice sender_addr = cs~load_msg_addr();
+  int op = in_msg_body~load_uint(32);
+
+  if (op == op::init_merchant) {
+    ;; Merchant initialization
+    int merchant_id = in_msg_body~load_uint(32);
+    cell config = in_msg_body~load_ref();
+    cell rules = in_msg_body~load_ref();
+    cell catalog = in_msg_body~load_ref();
+    
+    init_merchant(sender_addr, merchant_id, config, rules, catalog);
+    return ();
+  }
+
+  if (op == op::mint_points) {
+    ;; Mint points to user
+    slice recipient = in_msg_body~load_msg_addr();
+    int amount = in_msg_body~load_uint(256);
+    cell metadata = in_msg_body~load_ref();
+    
+    mint_points(sender_addr, recipient, amount, metadata);
+    return ();
+  }
+
+  if (op == op::burn_points) {
+    ;; Burn points from user
+    slice owner = in_msg_body~load_msg_addr();
+    int amount = in_msg_body~load_uint(256);
+    
+    burn_points(sender_addr, owner, amount);
+    return ();
+  }
+
+  if (op == op::transfer_points) {
+    ;; Transfer points between users
+    slice from_addr = in_msg_body~load_msg_addr();
+    slice to_addr = in_msg_body~load_msg_addr();
+    int amount = in_msg_body~load_uint(256);
+    
+    transfer_points(sender_addr, from_addr, to_addr, amount);
+    return ();
+  }
+
+  if (op == op::redeem_points) {
+    ;; Redeem points for rewards
+    slice owner = in_msg_body~load_msg_addr();
+    int amount = in_msg_body~load_uint(256);
+    int reward_id = in_msg_body~load_uint(32);
+    
+    redeem_points(sender_addr, owner, amount, reward_id);
+    return ();
+  }
+
+  if (op == op::emergency_pause) {
+    ;; Emergency pause (admin only)
+    emergency_pause(sender_addr);
+    return ();
+  }
+
+  if (op == op::unpause) {
+    ;; Unpause contract (admin only)
+    unpause(sender_addr);
+    return ();
+  }
+
+  if (op == op::update_merchant_config) {
+    ;; Update merchant configuration
+    cell new_config = in_msg_body~load_ref();
+    update_merchant_config(sender_addr, new_config);
+    return ();
+  }
+
+  if (op == op::enable_cross_merchant) {
+    ;; Enable cross-merchant functionality
+    int merchant_a = in_msg_body~load_uint(32);
+    int merchant_b = in_msg_body~load_uint(32);
+    
+    enable_cross_merchant_usage(sender_addr, merchant_a, merchant_b);
+    return ();
+  }
+
+  if (op == op::get_balance) {
+    ;; Query user balance (internal)
+    slice address = in_msg_body~load_msg_addr();
+    int query_id = in_msg_body~load_uint(64);
+    
+    send_response(sender_addr, query_id, get_balance(address));
+    return ();
+  }
+}
+
+;; Initialize merchant contract
+() init_merchant(int sender, int merchant_id, cell config, cell rules, cell catalog) impure inline {
+  throw_unless(401, equal_slices(sender, admin_address));
+  throw_unless(402, ~paused);
+
+  current_merchant_id = merchant_id;
+  merchant_config = config;
+  issuance_rules = rules;
+  redemption_catalog = catalog;
+  cross_merchant_enabled = false;
+  
+  ;; Set default parameters
+  max_mint_per_tx = 100000;  ;; 100k points max per transaction
+  total_supply = 0;
+  
+  ;; Emit initialization event
+  emit_log("merchant_initialized", [merchant_id], [config, rules, catalog]);
+}
+
+;; Mint points to user
+() mint_points(int sender, slice recipient, int amount, cell metadata) impure inline {
+  throw_unless(401, equal_slices(sender, admin_address));
+  throw_if(403, paused);
+  throw_unless(400, amount >= MIN_MINT_AMOUNT);
+  throw_unless(402, amount <= max_mint_per_tx);
+
+  ;; Get current balance
+  int current_balance = get_user_balance(recipient);
+  int new_balance = current_balance + amount;
+  
+  ;; Update balance
+  user_balances~udict_set(256, address_to_int(recipient), new_balance);
+  
+  ;; Store transaction metadata
+  cell tx_data = begin_cell()
+    .store_uint(amount, 256)
+    .store_uint(now(), 64)
+    .store_uint(0, 32)  ;; Mint transaction
+    .store_ref(metadata)
+    .end_cell();
+  
+  user_metadata~udict_set(256, address_to_int(recipient), tx_data);
+  
+  ;; Update total supply
+  total_supply += amount;
+  
+  ;; Emit mint event
+  emit_log("points_minted", [amount], [recipient, metadata]);
+}
+
+;; Burn points from user
+() burn_points(int sender, slice owner, int amount) impure inline {
+  throw_unless(401, equal_slices(sender, admin_address));
+  throw_if(403, paused);
+  
+  int current_balance = get_user_balance(owner);
+  throw_unless(404, current_balance >= amount);
+  
+  ;; Update balance
+  int new_balance = current_balance - amount;
+  user_balances~udict_set(256, address_to_int(owner), new_balance);
+  
+  ;; Update total supply
+  total_supply -= amount;
+  
+  ;; Emit burn event
+  emit_log("points_burned", [amount], [owner]);
+}
+
+;; Transfer points between users
+() transfer_points(int sender, slice from_addr, slice to_addr, int amount) impure inline {
+  throw_if(403, paused);
+  throw_unless(400, amount >= MIN_MINT_AMOUNT);
+  
+  int from_balance = get_user_balance(from_addr);
+  throw_unless(404, from_balance >= amount);
+  
+  int to_balance = get_user_balance(to_addr);
+  
+  ;; Update balances
+  user_balances~udict_set(256, address_to_int(from_addr), from_balance - amount);
+  user_balances~udict_set(256, address_to_int(to_addr), to_balance + amount);
+  
+  ;; Store transfer metadata
+  cell transfer_data = begin_cell()
+    .store_uint(amount, 256)
+    .store_uint(now(), 64)
+    .store_uint(2, 32)  ;; Transfer transaction
+    .end_cell();
+  
+  user_metadata~udict_set(256, address_to_int(from_addr), transfer_data);
+  user_metadata~udict_set(256, address_to_int(to_addr), transfer_data);
+  
+  ;; Emit transfer event
+  emit_log("points_transferred", [amount], [from_addr, to_addr]);
+}
+
+;; Redeem points for rewards
+() redeem_points(int sender, slice owner, int amount, int reward_id) impure inline {
+  throw_if(403, paused);
+  throw_unless(400, amount >= MIN_MINT_AMOUNT);
+  throw_unless(405, amount <= MAX_REDEMPTION_AMOUNT);
+  
+  int current_balance = get_user_balance(owner);
+  throw_unless(404, current_balance >= amount);
+  
+  ;; Validate redemption against catalog
+  throw_unless(406, is_valid_redemption(amount, reward_id));
+  
+  ;; Update balance
+  user_balances~udict_set(256, address_to_int(owner), current_balance - amount);
+  
+  ;; Update total supply
+  total_supply -= amount;
+  
+  ;; Store redemption metadata
+  cell redemption_data = begin_cell()
+    .store_uint(amount, 256)
+    .store_uint(now(), 64)
+    .store_uint(1, 32)  ;; Redemption transaction
+    .store_uint(reward_id, 32)
+    .end_cell();
+  
+  user_metadata~udict_set(256, address_to_int(owner), redemption_data);
+  
+  ;; Emit redemption event
+  emit_log("points_redeemed", [amount, reward_id], [owner]);
+}
+
+;; Emergency pause
+() emergency_pause(int sender) impure inline {
+  throw_unless(401, equal_slices(sender, admin_address));
+  
+  paused = true;
+  
+  ;; Emit pause event
+  emit_log("contract_paused", [], []);
+}
+
+;; Unpause contract
+() unpause(int sender) impure inline {
+  throw_unless(401, equal_slices(sender, admin_address));
+  
+  paused = false;
+  
+  ;; Emit unpause event
+  emit_log("contract_unpaused", [], []);
+}
+
+;; Update merchant configuration
+() update_merchant_config(int sender, cell new_config) impure inline {
+  throw_unless(401, equal_slices(sender, admin_address));
+  throw_if(403, paused);
+  
+  merchant_config = new_config;
+  
+  ;; Emit config update event
+  emit_log("merchant_config_updated", [], [new_config]);
+}
+
+;; Enable cross-merchant usage
+() enable_cross_merchant_usage(int sender, int merchant_a, int merchant_b) impure inline {
+  throw_unless(401, equal_slices(sender, admin_address));
+  throw_if(403, paused);
+  
+  ;; Validate merchant IDs
+  throw_unless(407, merchant_a > 0);
+  throw_unless(407, merchant_b > 0);
+  
+  cross_merchant_enabled = true;
+  
+  ;; Emit cross-merchant enable event
+  emit_log("cross_merchant_enabled", [merchant_a, merchant_b], []);
+}
+
+;; Helper functions
+
+;; Get user balance
+int get_user_balance(slice address) impure inline {
+  int addr_int = address_to_int(address);
+  (int value, int found) = user_balances.udict_get?(256, addr_int);
+  return found ? value : 0;
+}
+
+;; Convert address to integer
+int address_to_int(slice address) impure inline {
+  return address~load_uint(256);
+}
+
+;; Validate redemption
+int is_valid_redemption(int amount, int reward_id) impure inline {
+  ;; TODO: Implement reward catalog validation
+  ;; For now, return true for all redemptions
+  return true;
+}
+
+;; Send response
+() send_response(int to, int query_id, cell data) impure inline {
+  cell response = begin_cell()
+    .store_uint(0xFFFFFFFF, 32)  ;; Success response
+    .store_uint(query_id, 64)
+    .store_ref(data)
+    .end_cell();
+    
+  send_raw_message(begin_cell()
+    .store_uint(0x18, 6)
+    .store_slice(int_to_address(to))
+    .store_coins(0)
+    .store_uint(0, 107)
+    .store_ref(response)
+    .end_cell(), 64);
+}
+
+;; Convert int to address
+slice int_to_address(int addr) impure inline {
+  return begin_cell()
+    .store_uint(0x100, 9)  ;; testnet workchain 0
+    .store_uint(addr, 256)
+    .end_cell().begin_parse();
+}
+
+;; Emit log event
+() emit_log(int event_type, list<int> int_params, list<cell> cell_params) impure inline {
+  cell log_data = begin_cell()
+    .store_uint(event_type, 32)
+    .store_uint(now(), 64);
+    
+  ;; Add integer parameters
+  foreach (int param in int_params) {
+    log_data = log_data.store_uint(param, 256);
+  }
+  
+  ;; Add cell parameters
+  foreach (cell param in cell_params) {
+    log_data = log_data.store_ref(param);
+  }
+  
+  emit(log_data);
+}
+
+;; Get balance (external method)
+(int) get_balance(slice address) method_id {
+  return get_user_balance(address);
+}
+
+;; Get transaction history (external method)
+(cell) get_transaction_history(slice address, int limit) method_id {
+  ;; TODO: Implement transaction history retrieval
+  return empty_cell();
+}
+
+;; Get merchant configuration (external method)
+(cell) get_merchant_config() method_id {
+  return merchant_config;
+}
+
+;; Get total supply (external method)
+(int) get_total_supply() method_id {
+  return total_supply;
+}
+
+;; Check if contract is paused (external method)
+(int) is_paused() method_id {
+  return paused;
+}

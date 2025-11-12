@@ -1,0 +1,589 @@
+;; TON Cross-Merchant Registry Smart Contract
+;; Manages partnerships and interoperability between merchants
+;; Enables cross-merchant point redemption and collaborative rewards
+
+#include "stdlib.fc";
+#include "op-codes.fc";
+
+;; Global variables
+global int admin_address;           ;; System admin address
+global int registry_manager;        ;; Registry manager address
+global int total_merchants;         ;; Total number of registered merchants
+global int active_partnerships;     ;; Number of active partnerships
+global int paused;                  ;; Emergency pause flag
+global int platform_fee;            ;; Platform fee for partnerships
+global int min_partnership_duration; ;; Minimum partnership duration
+global int max_partnerships_per_merchant; ;; Maximum partnerships per merchant
+
+;; Merchant registry data
+global dict merchant_registry;      ;; Map of merchant_id to merchant_info
+global dict partnership_registry;   ;; Map of partnership_id to partnership_info
+global dict loyalty_mappings;       ;; Map for cross-merchant loyalty integration
+global dict redemption_catalogs;    ;; Shared redemption catalogs
+
+;; Partnership management
+global int next_partnership_id;     ;; Next available partnership ID
+global cell partnership_templates;  ;; Predefined partnership templates
+global int auto_renewal_enabled;    ;; Whether auto-renewal is enabled
+
+;; Compliance and verification
+global int kyc_verification_required; ;; Whether KYC verification is required
+global cell compliance_rules;       ;; Compliance rules for partnerships
+global int regulatory_reporting;    ;; Whether partnership data needs reporting
+
+;; Analytics and monitoring
+global cell partnership_analytics;  ;; Partnership usage analytics
+global int total_cross_transactions; ;; Total cross-merchant transactions
+global int total_cross_volume;      ;; Total cross-merchant transaction volume
+
+;; Constants
+const int PARTNERSHIP_FEE = 100000000; ;; 100 TON partnership fee
+const int MIN_PARTNERSHIP_DAYS = 30;   ;; 30 days minimum
+const int MAX_PARTNERSHIPS = 1000;     ;; Maximum partnerships per merchant
+const int PLATFORM_FEE_RATE = 1000;    ;; 1% platform fee (1000 basis points)
+
+;; Status definitions
+const int PARTNERSHIP_INACTIVE = 0;
+const int PARTNERSHIP_PENDING = 1;
+const int PARTNERSHIP_ACTIVE = 2;
+const int PARTNERSHIP_SUSPENDED = 3;
+const int PARTNERSHIP_EXPIRED = 4;
+const int PARTNERSHIP_TERMINATED = 5;
+
+;; Merchant verification levels
+const int VERIFICATION_NONE = 0;
+const int VERIFICATION_BASIC = 1;
+const int VERIFICATION_FULL = 2;
+const int VERIFICATION_ENTERPRISE = 3;
+
+;; Storage scheme:
+;; storage[0] = admin_address
+;; storage[1] = registry_manager
+;; storage[2] = total_merchants
+;; storage[3] = active_partnerships
+;; storage[4] = paused
+;; storage[5] = platform_fee
+;; storage[6] = min_partnership_duration
+;; storage[7] = max_partnerships_per_merchant
+;; storage[8] = next_partnership_id
+;; storage[9] = auto_renewal_enabled
+;; storage[10] = kyc_verification_required
+;; storage[11] = regulatory_reporting
+;; storage[12] = total_cross_transactions
+;; storage[13] = total_cross_volume
+;; storage[14] = merchant_registry (dictionary)
+;; storage[15] = partnership_registry (dictionary)
+;; storage[16] = loyalty_mappings (dictionary)
+;; storage[17] = redemption_catalogs (dictionary)
+;; storage[18] = partnership_templates
+;; storage[19] = compliance_rules
+;; storage[20] = partnership_analytics
+
+;; Main message handler
+() recv_internal(int msg_value, cell in_msg, slice in_msg_body) impure {
+  var cs = in_msg.begin_parse();
+  var flags = cs~load_uint(4);
+
+  if (flags & 1) {
+    return ();
+  }
+
+  slice sender_addr = cs~load_msg_addr();
+  int op = in_msg_body~load_uint(32);
+
+  if (op == op::register_partnership) {
+    ;; Register new partnership between merchants
+    int merchant_a = in_msg_body~load_uint(32);
+    int merchant_b = in_msg_body~load_uint(32);
+    cell partnership_config = in_msg_body~load_ref();
+    
+    register_partnership(sender_addr, merchant_a, merchant_b, partnership_config);
+    return ();
+  }
+
+  if (op == op::activate_partnership) {
+    ;; Activate approved partnership
+    int partnership_id = in_msg_body~load_uint(32);
+    
+    activate_partnership(sender_addr, partnership_id);
+    return ();
+  }
+
+  if (op == op::deactivate_partnership) {
+    ;; Deactivate partnership
+    int partnership_id = in_msg_body->load_uint(32);
+    
+    deactivate_partnership(sender_addr, partnership_id);
+    return ();
+  }
+
+  if (op == op::check_interoperability) {
+    ;; Check if merchants can interoperate
+    int merchant_a = in_msg_body->load_uint(32);
+    int merchant_b = in_msg_body->load_uint(32);
+    int query_id = in_msg_body->load_uint(64);
+    
+    check_interoperability(query_id, merchant_a, merchant_b);
+    return ();
+  }
+
+  if (op == op::update_partnership_rules) {
+    ;; Update partnership rules
+    int partnership_id = in_msg_body->load_uint(32);
+    cell new_rules = in_msg_body->load_ref();
+    
+    update_partnership_rules(sender_addr, partnership_id, new_rules);
+    return ();
+  }
+
+  if (op == op::get_partner_merchants) {
+    ;; Get list of partner merchants for a merchant
+    int merchant_id = in_msg_body->load_uint(32);
+    int query_id = in_msg_body->load_uint(64);
+    
+    get_partner_merchants(query_id, merchant_id);
+    return ();
+  }
+
+  if (op == op::validate_cross_transaction) {
+    ;; Validate cross-merchant transaction
+    int from_merchant = in_msg_body->load_uint(32);
+    int to_merchant = in_msg_body->load_uint(32);
+    int transaction_type = in_msg_body->load_uint(32);
+    int amount = in_msg_body->load_uint(256);
+    cell transaction_metadata = in_msg_body->load_ref();
+    int query_id = in_msg_body->load_uint(64);
+    
+    validate_cross_transaction(query_id, from_merchant, to_merchant, transaction_type, amount, transaction_metadata);
+    return ();
+  }
+
+  if (op == op::emergency_pause) {
+    ;; Emergency pause
+    emergency_pause(sender_addr);
+    return ();
+  }
+
+  if (op == op::unpause) {
+    ;; Unpause contract
+    unpause(sender_addr);
+    return ();
+  }
+}
+
+;; Register new partnership between merchants
+() register_partnership(slice sender, int merchant_a, int merchant_b, cell partnership_config) impure inline {
+  throw_unless(401, equal_slices(sender, admin_address) | equal_slices(sender, registry_manager));
+  throw_if(403, paused);
+  throw_unless(400, merchant_a != merchant_b);
+  throw_unless(401, merchant_a > 0 & merchant_b > 0);
+  
+  ;; Validate merchant existence
+  throw_unless(402, merchant_exists(merchant_a));
+  throw_unless(402, merchant_exists(merchant_b));
+  
+  ;; Check partnership limits
+  int current_partnerships_a = get_merchant_partnership_count(merchant_a);
+  int current_partnerships_b = get_merchant_partnership_count(merchant_b);
+  
+  throw_unless(403, current_partnerships_a < max_partnerships_per_merchant);
+  throw_unless(403, current_partnerships_b < max_partnerships_per_merchant);
+  
+  ;; Create partnership ID
+  int partnership_id = next_partnership_id;
+  next_partnership_id += 1;
+  
+  ;; Parse partnership configuration
+  slice config_slice = partnership_config.begin_parse();
+  int partnership_type = config_slice~load_uint(32);  ;; 1 = loyalty, 2 = payment, 3 = hybrid
+  int duration_days = config_slice~load_uint(32);
+  int fee_split = config_slice~load_uint(32);  ;; Percentage for merchant B
+  cell custom_rules = config_slice~load_ref();
+  
+  ;; Validate duration
+  throw_unless(404, duration_days >= min_partnership_duration);
+  
+  ;; Create partnership info
+  cell partnership_info = begin_cell()
+    .store_uint(merchant_a, 32)
+    .store_uint(merchant_b, 32)
+    .store_uint(partnership_id, 32)
+    .store_uint(partnership_type, 32)
+    .store_uint(now(), 64)  ;; Created at
+    .store_uint(now() + (duration_days * 86400), 64)  ;; Expires at
+    .store_uint(fee_split, 32)
+    .store_uint(PARTNERSHIP_PENDING, 32)
+    .store_ref(custom_rules)
+    .end_cell();
+  
+  ;; Store partnership
+  partnership_registry~udict_set(32, partnership_id, partnership_info);
+  
+  ;; Update counters
+  total_merchants += 2;  ;; Increment for both merchants
+  active_partnerships += 1;
+  
+  ;; Emit registration event
+  emit_log("partnership_registered", [partnership_id, merchant_a, merchant_b], [partnership_config]);
+}
+
+;; Activate approved partnership
+() activate_partnership(slice sender, int partnership_id) impure inline {
+  throw_unless(401, equal_slices(sender, admin_address));
+  throw_if(403, paused);
+  
+  (cell partnership_info, int found) = partnership_registry.udict_get?(32, partnership_id);
+  throw_unless(500, found);
+  
+  slice info_slice = partnership_info.begin_parse();
+  int merchant_a = info_slice~load_uint(32);
+  int merchant_b = info_slice~load_uint(32);
+  int status = info_slice~load_uint(32);
+  
+  throw_unless(501, status == PARTNERSHIP_PENDING);
+  
+  ;; Update status to active
+  cell updated_info = begin_cell()
+    .store_uint(merchant_a, 32)
+    .store_uint(merchant_b, 32)
+    .store_uint(partnership_id, 32)
+    .store_uint(info_slice~load_uint(32), 32)  ;; partnership_type
+    .store_uint(info_slice~load_uint(64), 64)  ;; created_at
+    .store_uint(info_slice~load_uint(64), 64)  ;; expires_at
+    .store_uint(info_slice~load_uint(32), 32)  ;; fee_split
+    .store_uint(PARTNERSHIP_ACTIVE, 32)
+    .store_ref(info_slice~load_ref())  ;; custom_rules
+    .end_cell();
+  
+  partnership_registry~udict_set(32, partnership_id, updated_info);
+  
+  ;; Initialize loyalty mapping if needed
+  initialize_loyalty_mapping(merchant_a, merchant_b, partnership_id);
+  
+  ;; Emit activation event
+  emit_log("partnership_activated", [partnership_id, merchant_a, merchant_b], []);
+}
+
+;; Deactivate partnership
+() deactivate_partnership(slice sender, int partnership_id) impure inline {
+  throw_unless(401, equal_slices(sender, admin_address) | equal_slices(sender, registry_manager));
+  
+  (cell partnership_info, int found) = partnership_registry.udict_get?(32, partnership_id);
+  throw_unless(500, found);
+  
+  slice info_slice = partnership_info.begin_parse();
+  int merchant_a = info_slice~load_uint(32);
+  int merchant_b = info_slice->load_uint(32);
+  int status = info_slice->load_uint(32);
+  
+  throw_unless(502, status == PARTNERSHIP_ACTIVE | status == PARTNERSHIP_PENDING);
+  
+  ;; Update status to terminated
+  cell updated_info = begin_cell()
+    .store_uint(merchant_a, 32)
+    .store_uint(merchant_b, 32)
+    .store_uint(partnership_id, 32)
+    .store_uint(info_slice~load_uint(32), 32)  ;; partnership_type
+    .store_uint(info_slice~load_uint(64), 64)  ;; created_at
+    .store_uint(now(), 64)  ;; terminated at
+    .store_uint(info_slice~load_uint(32), 32)  ;; fee_split
+    .store_uint(PARTNERSHIP_TERMINATED, 32)
+    .store_ref(info_slice~load_ref())  ;; custom_rules
+    .end_cell();
+  
+  partnership_registry~udict_set(32, partnership_id, updated_info);
+  
+  ;; Update counters
+  active_partnerships -= 1;
+  
+  ;; Emit deactivation event
+  emit_log("partnership_deactivated", [partnership_id, merchant_a, merchant_b], []);
+}
+
+;; Check interoperability between merchants
+() check_interoperability(int query_id, int merchant_a, int merchant_b) impure inline {
+  (cell interoperability_data, int can_interoperate) = check_partnership_status(merchant_a, merchant_b);
+  
+  send_raw_message(begin_cell()
+    .store_uint(0x18, 6)
+    .store_slice(begin_cell().store_uint(admin_address, 256).end_cell().begin_parse())
+    .store_coins(0)
+    .store_uint(0, 107)
+    .store_ref(begin_cell()
+      .store_uint(0xFFFFFFFF, 32)
+      .store_uint(query_id, 64)
+      .store_uint(can_interoperate, 1)
+      .store_ref(interoperability_data)
+      .end_cell())
+    .end_cell(), 64);
+}
+
+;; Update partnership rules
+() update_partnership_rules(slice sender, int partnership_id, cell new_rules) impure inline {
+  throw_unless(401, equal_slices(sender, admin_address));
+  throw_if(403, paused);
+  
+  (cell partnership_info, int found) = partnership_registry.udict_get?(32, partnership_id);
+  throw_unless(500, found);
+  
+  slice info_slice = partnership_info.begin_parse();
+  int merchant_a = info_slice~load_uint(32);
+  int merchant_b = info_slice~load_uint(32);
+  int status = info_slice~load_uint(32);
+  
+  throw_unless(502, status == PARTNERSHIP_ACTIVE);
+  
+  ;; Update rules
+  cell updated_info = begin_cell()
+    .store_uint(merchant_a, 32)
+    .store_uint(merchant_b, 32)
+    .store_uint(partnership_id, 32)
+    .store_uint(info_slice~load_uint(32), 32)  ;; partnership_type
+    .store_uint(info_slice~load_uint(64), 64)  ;; created_at
+    .store_uint(info_slice~load_uint(64), 64)  ;; expires_at
+    .store_uint(info_slice~load_uint(32), 32)  ;; fee_split
+    .store_uint(status, 32)
+    .store_ref(new_rules)
+    .end_cell();
+  
+  partnership_registry~udict_set(32, partnership_id, updated_info);
+  
+  ;; Emit rules update event
+  emit_log("partnership_rules_updated", [partnership_id], [new_rules]);
+}
+
+;; Get partner merchants for a merchant
+() get_partner_merchants(int query_id, int merchant_id) impure inline {
+  cell partner_list = find_partner_merchants(merchant_id);
+  
+  send_raw_message(begin_cell()
+    .store_uint(0x18, 6)
+    .store_slice(begin_cell().store_uint(admin_address, 256).end_cell().begin_parse())
+    .store_coins(0)
+    .store_uint(0, 107)
+    .store_ref(begin_cell()
+      .store_uint(0xFFFFFFFF, 32)
+      .store_uint(query_id, 64)
+      .store_ref(partner_list)
+      .end_cell())
+    .end_cell(), 64);
+}
+
+;; Validate cross-merchant transaction
+() validate_cross_transaction(int query_id, int from_merchant, int to_merchant, int transaction_type, int amount, cell transaction_metadata) impure inline {
+  int validation_result = 0;
+  int reason_code = 0;
+  
+  ;; Check if merchants can interoperate
+  (cell interop_data, int can_interoperate) = check_partnership_status(from_merchant, to_merchant);
+  
+  if (~can_interoperate) {
+    validation_result = 0;
+    reason_code = 1;  ;; No partnership
+  } else {
+    ;; Additional validation based on transaction type
+    if (transaction_type == 1) {
+      ;; Loyalty points transfer
+      validation_result = validate_loyalty_transaction(from_merchant, to_merchant, amount);
+      reason_code = validation_result ? 0 : 2;
+    } else if (transaction_type == 2) {
+      ;; Payment processing
+      validation_result = validate_payment_transaction(from_merchant, to_merchant, amount);
+      reason_code = validation_result ? 0 : 3;
+    } else {
+      validation_result = 1;
+      reason_code = 0;
+    }
+  }
+  
+  cell validation_data = begin_cell()
+    .store_uint(validation_result, 1)
+    .store_uint(reason_code, 8)
+    .store_ref(interop_data)
+    .store_ref(transaction_metadata)
+    .end_cell();
+  
+  send_raw_message(begin_cell()
+    .store_uint(0x18, 6)
+    .store_slice(begin_cell().store_uint(admin_address, 256).end_cell().begin_parse())
+    .store_coins(0)
+    .store_uint(0, 107)
+    .store_ref(begin_cell()
+      .store_uint(0xFFFFFFFF, 32)
+      .store_uint(query_id, 64)
+      .store_ref(validation_data)
+      .end_cell())
+    .end_cell(), 64);
+}
+
+;; Emergency pause
+() emergency_pause(slice sender) impure inline {
+  throw_unless(401, equal_slices(sender, admin_address));
+  
+  paused = true;
+  
+  ;; Emit pause event
+  emit_log("registry_paused", [], []);
+}
+
+;; Unpause contract
+() unpause(slice sender) impure inline {
+  throw_unless(401, equal_slices(sender, admin_address));
+  
+  paused = false;
+  
+  ;; Emit unpause event
+  emit_log("registry_unpaused", [], []);
+}
+
+;; Helper functions
+
+;; Check if merchant exists
+int merchant_exists(int merchant_id) impure inline {
+  (cell merchant_info, int found) = merchant_registry.udict_get?(32, merchant_id);
+  return found;
+}
+
+;; Get merchant partnership count
+int get_merchant_partnership_count(int merchant_id) impure inline {
+  int count = 0;
+  
+  ;; Iterate through partnership registry
+  (int key, cell partnership_info, int success) = partnership_registry.udict_get_next?(0);
+  
+  while (success) {
+    slice info_slice = partnership_info.begin_parse();
+    int merchant_a = info_slice~load_uint(32);
+    int merchant_b = info_slice~load_uint(32);
+    int status = info_slice~load_uint(32);
+    
+    if ((merchant_a == merchant_id | merchant_b == merchant_id) & (status == PARTNERSHIP_ACTIVE)) {
+      count += 1;
+    }
+    
+    (key, partnership_info, success) = partnership_registry.udict_get_next?(key);
+  }
+  
+  return count;
+}
+
+;; Initialize loyalty mapping between merchants
+() initialize_loyalty_mapping(int merchant_a, int merchant_b, int partnership_id) impure inline {
+  cell loyalty_map = begin_cell()
+    .store_uint(merchant_a, 32)
+    .store_uint(merchant_b, 32)
+    .store_uint(partnership_id, 32)
+    .store_uint(100, 32)  ;; Default 1:1 conversion rate
+    .store_uint(1000, 32) ;; Maximum transfer amount
+    .end_cell();
+  
+  loyalty_mappings~udict_set(64, (merchant_a * 1000000 + merchant_b), loyalty_map);
+}
+
+;; Check partnership status between merchants
+(cell, int) check_partnership_status(int merchant_a, int merchant_b) impure inline {
+  (int key, cell partnership_info, int success) = partnership_registry.udict_get_next?(0);
+  
+  while (success) {
+    slice info_slice = partnership_info.begin_parse();
+    int partner_a = info_slice~load_uint(32);
+    int partner_b = info_slice~load_uint(32);
+    int status = info_slice~load_uint(32);
+    int expires_at = info_slice~load_uint(64);
+    
+    if (((partner_a == merchant_a & partner_b == merchant_b) | (partner_a == merchant_b & partner_b == merchant_a)) & (status == PARTNERSHIP_ACTIVE) & (now() <= expires_at)) {
+      return (partnership_info, 1);
+    }
+    
+    (key, partnership_info, success) = partnership_registry.udict_get_next?(key);
+  }
+  
+  return (empty_cell(), 0);
+}
+
+;; Find partner merchants for a given merchant
+cell find_partner_merchants(int merchant_id) impure inline {
+  cell partners = begin_cell();
+  
+  (int key, cell partnership_info, int success) = partnership_registry.udict_get_next?(0);
+  
+  while (success) {
+    slice info_slice = partnership_info.begin_parse();
+    int partner_a = info_slice~load_uint(32);
+    int partner_b = info_slice~load_uint(32);
+    int status = info_slice~load_uint(32);
+    
+    if ((partner_a == merchant_id | partner_b == merchant_id) & (status == PARTNERSHIP_ACTIVE)) {
+      int partner_id = (partner_a == merchant_id) ? partner_b : partner_a;
+      partners = begin_cell().store_uint(partner_id, 32).store_ref(partners).end_cell();
+    }
+    
+    (key, partnership_info, success) = partnership_registry.udict_get_next?(key);
+  }
+  
+  return partners;
+}
+
+;; Validate loyalty transaction
+int validate_loyalty_transaction(int from_merchant, int to_merchant, int amount) impure inline {
+  (cell loyalty_map, int found) = loyalty_mappings.udict_get?(64, (from_merchant * 1000000 + to_merchant));
+  
+  if (~found) {
+    return 0;
+  }
+  
+  slice map_slice = loyalty_map.begin_parse();
+  int max_transfer = map_slice~load_uint(32);
+  
+  return amount <= max_transfer ? 1 : 0;
+}
+
+;; Validate payment transaction
+int validate_payment_transaction(int from_merchant, int to_merchant, int amount) impure inline {
+  ;; TODO: Implement payment validation logic
+  return 1;
+}
+
+;; Emit log event
+() emit_log(int event_type, list<int> int_params, list<cell> cell_params) impure inline {
+  cell log_data = begin_cell()
+    .store_uint(event_type, 32)
+    .store_uint(now(), 64);
+    
+  foreach (int param in int_params) {
+    log_data = log_data.store_uint(param, 256);
+  }
+  
+  foreach (cell param in cell_params) {
+    log_data = log_data.store_ref(param);
+  }
+  
+  emit(log_data);
+}
+
+;; External methods
+
+;; Get total number of merchants
+(int) get_total_merchants() method_id {
+  return total_merchants;
+}
+
+;; Get number of active partnerships
+(int) get_active_partnerships() method_id {
+  return active_partnerships;
+}
+
+;; Check if registry is paused
+(int) is_paused() method_id {
+  return paused;
+}
+
+;; Get partnership statistics
+(cell) get_partnership_statistics() method_id {
+  return begin_cell()
+    .store_uint(total_merchants, 32)
+    .store_uint(active_partnerships, 32)
+    .store_uint(total_cross_transactions, 64)
+    .store_uint(total_cross_volume, 256)
+    .end_cell();
+}

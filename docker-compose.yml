@@ -1,0 +1,237 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: ton-business-postgres
+    environment:
+      POSTGRES_DB: ton_business
+      POSTGRES_USER: tonapp
+      POSTGRES_PASSWORD: tonpass123
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d
+    networks:
+      - ton-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tonapp -d ton_business"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MongoDB for analytics and semi-structured data
+  mongodb:
+    image: mongo:6.0
+    container_name: ton-business-mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: tonapp
+      MONGO_INITDB_ROOT_PASSWORD: tonpass123
+      MONGO_INITDB_DATABASE: ton_business_analytics
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+      - ./database/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    networks:
+      - ton-network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for caching and sessions
+  redis:
+    image: redis:7-alpine
+    container_name: ton-business-redis
+    command: redis-server --appendonly yes --requirepass tonpass123
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - ton-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # RabbitMQ for message queues
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: ton-business-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: tonapp
+      RABBITMQ_DEFAULT_PASS: tonpass123
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - ton-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # API Gateway Service
+  api-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.api-gateway
+    container_name: ton-business-api-gateway
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      REDIS_URL: redis://tonpass123@redis:6379
+      POSTGRES_URL: postgres://tonapp:tonpass123@postgres:5432/ton_business
+      RABBITMQ_URL: amqp://tonapp:tonpass123@rabbitmq:5672
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - ton-network
+    volumes:
+      - ./src:/app/src
+      - ./services/api-gateway:/app/services/api-gateway
+    restart: unless-stopped
+
+  # Payment Service
+  payment-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.payment-service
+    container_name: ton-business-payment-service
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+      REDIS_URL: redis://tonpass123@redis:6379
+      POSTGRES_URL: postgres://tonapp:tonpass123@postgres:5432/ton_business
+      RABBITMQ_URL: amqp://tonapp:tonpass123@rabbitmq:5672
+      TON_NETWORK: testnet
+      TON_API_URL: https://testnet.toncenter.com/api/v2/jsonRPC
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - ton-network
+    volumes:
+      - ./src:/app/src
+      - ./services/payment-service:/app/services/payment-service
+    restart: unless-stopped
+
+  # Loyalty Service
+  loyalty-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.loyalty-service
+    container_name: ton-business-loyalty-service
+    environment:
+      NODE_ENV: development
+      PORT: 3002
+      REDIS_URL: redis://tonpass123@redis:6379
+      POSTGRES_URL: postgres://tonapp:tonpass123@postgres:5432/ton_business
+      RABBITMQ_URL: amqp://tonapp:tonpass123@rabbitmq:5672
+      MONGO_URL: mongodb://tonapp:tonpass123@mongodb:27017/ton_business_analytics
+      TON_NETWORK: testnet
+    ports:
+      - "3002:3002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    networks:
+      - ton-network
+    volumes:
+      - ./src:/app/src
+      - ./services/loyalty-service:/app/services/loyalty-service
+    restart: unless-stopped
+
+  # Tipping Service
+  tipping-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.tipping-service
+    container_name: ton-business-tipping-service
+    environment:
+      NODE_ENV: development
+      PORT: 3003
+      REDIS_URL: redis://tonpass123@redis:6379
+      POSTGRES_URL: postgres://tonapp:tonpass123@postgres:5432/ton_business
+      RABBITMQ_URL: amqp://tonapp:tonpass123@rabbitmq:5672
+      TON_NETWORK: testnet
+    ports:
+      - "3003:3003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - ton-network
+    volumes:
+      - ./src:/app/src
+      - ./services/tipping-service:/app/services/tipping-service
+    restart: unless-stopped
+
+  # Telegram Bot Service
+  telegram-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.telegram-bot
+    container_name: ton-business-telegram-bot
+    environment:
+      NODE_ENV: development
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      WEBHOOK_URL: ${WEBHOOK_URL}
+      API_GATEWAY_URL: http://api-gateway:3000
+    depends_on:
+      - api-gateway
+    networks:
+      - ton-network
+    volumes:
+      - ./services/telegram-bot:/app/services/telegram-bot
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+  mongodb_data:
+    driver: local
+  redis_data:
+    driver: local
+  rabbitmq_data:
+    driver: local
+
+networks:
+  ton-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

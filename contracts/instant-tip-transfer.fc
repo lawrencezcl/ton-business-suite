@@ -1,0 +1,494 @@
+;; TON Instant Tip Transfer Smart Contract
+;; Ultra-fast settlement for service industry tips
+;; Enables 3-second tip settlements via direct wallet-to-wallet transfers
+
+#include "stdlib.fc";
+#include "op-codes.fc";
+
+;; Global variables
+global int merchant_id;             ;; Merchant that owns the staff member
+global int staff_id;                ;; Service staff member ID
+global int staff_wallet;            ;; Staff member's TON wallet address
+global int merchant_wallet;         ;; Merchant's TON wallet address
+global int paused;                  ;; Emergency pause flag
+global int admin_address;           ;; Admin wallet for management
+global int min_tip_amount;          ;; Minimum tip amount in nanoTON
+global int max_tip_amount;          ;; Maximum tip amount in nanoTON
+global int settlement_fee;          ;; Fee charged per settlement
+global int total_tips_received;     ;; Total tips received by staff
+global int tip_count;               ;; Number of tips received
+
+;; Staff verification and metadata
+global cell staff_info;             ;; Staff member information
+global cell tip_settings;           ;; Tip-specific settings
+global dict tip_history;            ;; Tip transaction history
+global dict user_stats;             ;; Customer statistics
+
+;; Compliance and security
+global int kyc_verified;            ;; Whether staff has passed KYC
+global int compliance_enabled;      ;; Whether compliance checks are active
+global int transaction_limit;       ;; Daily transaction limit
+global int current_daily_volume;    ;; Current day's transaction volume
+global int last_reset_date;         ;; Date when daily volume was last reset
+
+;; Constants
+const int TIP_SETTLEMENT_FEE = 1000000;  ;; 1 TON in nanoTON
+const int DEFAULT_MIN_TIP = 100000000;   ;; 0.1 TON in nanoTON
+const int DEFAULT_MAX_TIP = 10000000000; ;; 10 TON in nanoTON
+const int DAILY_RESET_TIME = 86400;      ;; 24 hours in seconds
+const int MAX_TIPS_PER_DAY = 1000;
+
+;; Storage scheme:
+;; storage[0] = merchant_id
+;; storage[1] = staff_id
+;; storage[2] = staff_wallet
+;; storage[3] = merchant_wallet
+;; storage[4] = paused
+;; storage[5] = admin_address
+;; storage[6] = min_tip_amount
+;; storage[7] = max_tip_amount
+;; storage[8] = settlement_fee
+;; storage[9] = total_tips_received
+;; storage[10] = tip_count
+;; storage[11] = staff_info
+;; storage[12] = tip_settings
+;; storage[13] = kyc_verified
+;; storage[14] = compliance_enabled
+;; storage[15] = transaction_limit
+;; storage[16] = current_daily_volume
+;; storage[17] = last_reset_date
+;; storage[18] = tip_history (dictionary)
+;; storage[19] = user_stats (dictionary)
+
+;; Main message handler
+() recv_internal(int msg_value, cell in_msg, slice in_msg_body) impure {
+  var cs = in_msg.begin_parse();
+  var flags = cs~load_uint(4);
+
+  if (flags & 1) {
+    return ();
+  }
+
+  slice sender_addr = cs~load_msg_addr();
+  int op = in_msg_body~load_uint(32);
+
+  if (op == op::init_tip_transfer) {
+    ;; Initialize tip transfer contract for staff member
+    int staff_merchant_id = in_msg_body~load_uint(32);
+    int staff_member_id = in_msg_body~load_uint(32);
+    cell staff_info_cell = in_msg_body~load_ref();
+    
+    init_tip_transfer(sender_addr, staff_merchant_id, staff_member_id, staff_info_cell);
+    return ();
+  }
+
+  if (op == op::process_tip) {
+    ;; Process incoming tip payment
+    int tip_amount = in_msg_body~load_uint(256);
+    cell tip_metadata = in_msg_body~load_ref();
+    
+    process_tip(sender_addr, tip_amount, tip_metadata);
+    return ();
+  }
+
+  if (op == op::settle_tip) {
+    ;; Settle tip to staff wallet
+    int tip_id = in_msg_body~load_uint(64);
+    
+    settle_tip(sender_addr, tip_id);
+    return ();
+  }
+
+  if (op == op::cancel_tip) {
+    ;; Cancel tip (if not yet settled)
+    int tip_id = in_msg_body~load_uint(64);
+    
+    cancel_tip(sender_addr, tip_id);
+    return ();
+  }
+
+  if (op == op::verify_staff) {
+    ;; Verify staff member identity
+    int query_id = in_msg_body~load_uint(64);
+    
+    verify_staff(query_id);
+    return ();
+  }
+
+  if (op == op::update_staff_info) {
+    ;; Update staff member information
+    cell new_staff_info = in_msg_body~load_ref();
+    
+    update_staff_info(sender_addr, new_staff_info);
+    return ();
+  }
+
+  if (op == op::emergency_pause) {
+    ;; Emergency pause (admin only)
+    emergency_pause(sender_addr);
+    return ();
+  }
+
+  if (op == op::unpause) {
+    ;; Unpause contract (admin only)
+    unpause(sender_addr);
+    return ();
+  }
+
+  if (op == op::bulk_tip_settlement) {
+    ;; Bulk settlement for multiple tips
+    cell tip_ids = in_msg_body~load_ref();
+    
+    bulk_tip_settlement(sender_addr, tip_ids);
+    return ();
+  }
+}
+
+;; Initialize tip transfer contract for staff member
+() init_tip_transfer(int sender, int merchant_id_param, int staff_id_param, cell staff_info_cell) impure inline {
+  throw_unless(401, equal_slices(sender, admin_address));
+  throw_if(403, paused);
+
+  merchant_id = merchant_id_param;
+  staff_id = staff_id_param;
+  staff_info = staff_info_cell;
+  
+  ;; Parse staff info to get wallet address
+  slice staff_info_slice = staff_info_cell.begin_parse();
+  staff_wallet = staff_info_slice~load_uint(256);
+  merchant_wallet = staff_info_slice~load_uint(256);
+  
+  ;; Set default limits
+  min_tip_amount = DEFAULT_MIN_TIP;
+  max_tip_amount = DEFAULT_MAX_TIP;
+  settlement_fee = TIP_SETTLEMENT_FEE;
+  
+  ;; Reset counters
+  total_tips_received = 0;
+  tip_count = 0;
+  current_daily_volume = 0;
+  last_reset_date = now() / DAILY_RESET_TIME;
+  
+  ;; Initialize settings
+  tip_settings = begin_cell()
+    .store_uint(1, 1)  ;; Auto-settlement enabled
+    .store_uint(1, 1)  ;; Points linkage enabled
+    .store_uint(100, 32)  ;; Points per 1 TON tip
+    .end_cell();
+  
+  kyc_verified = false;
+  compliance_enabled = true;
+  transaction_limit = MAX_TIPS_PER_DAY;
+  
+  ;; Emit initialization event
+  emit_log("tip_contract_initialized", [staff_id], [staff_info_cell]);
+}
+
+;; Process incoming tip payment
+() process_tip(slice customer_addr, int tip_amount, cell tip_metadata) impure inline {
+  throw_if(403, paused);
+  throw_unless(400, tip_amount >= min_tip_amount);
+  throw_unless(401, tip_amount <= max_tip_amount);
+  
+  ;; Validate daily limits
+  validate_daily_limits();
+  
+  ;; Create unique tip ID
+  int tip_id = now() * 1000000 + tip_count;
+  
+  ;; Store tip information
+  cell tip_data = begin_cell()
+    .store_uint(tip_amount, 256)
+    .store_uint(now(), 64)
+    .store_uint(1, 32)  ;; Pending status
+    .store_msg_addr(customer_addr)
+    .store_ref(tip_metadata)
+    .end_cell();
+  
+  tip_history~udict_set(64, tip_id, tip_data);
+  
+  ;; Update counters
+  tip_count += 1;
+  total_tips_received += tip_amount;
+  current_daily_volume += 1;
+  
+  ;; Update customer statistics
+  update_customer_stats(customer_addr, tip_amount);
+  
+  ;; Auto-settle if enabled
+  cell settings_slice = tip_settings.begin_parse();
+  int auto_settlement = settings_slice~load_uint(1);
+  
+  if (auto_settlement) {
+    auto_settle_tip(tip_id, tip_amount);
+  }
+  
+  ;; Emit tip processed event
+  emit_log("tip_processed", [tip_id, tip_amount], [customer_addr, tip_metadata]);
+}
+
+;; Auto-settle tip to staff wallet
+() auto_settle_tip(int tip_id, int tip_amount) impure inline {
+  ;; Calculate net amount after fees
+  int net_amount = tip_amount - settlement_fee;
+  
+  ;; Validate staff wallet
+  throw_unless(503, staff_wallet > 0);
+  
+  ;; Direct transfer to staff wallet
+  send_raw_message(begin_cell()
+    .store_uint(0x18, 6)  ;; Internal message
+    .store_uint(staff_wallet, 256)
+    .store_coins(net_amount)
+    .store_uint(0, 107)  ;; No bounce
+    .end_cell(), 1);
+  
+  ;; Update tip status to settled
+  (cell tip_data, int found) = tip_history.udict_get?(64, tip_id);
+  if (found) {
+    slice tip_slice = tip_data.begin_parse();
+    tip_slice~load_uint(256 + 64 + 32);  ;; Skip existing data
+    cell metadata = tip_slice~load_ref();
+    
+    cell updated_tip_data = begin_cell()
+      .store_uint(tip_amount, 256)
+      .store_uint(now(), 64)
+      .store_uint(2, 32)  ;; Settled status
+      .store_msg_addr(begin_cell().store_uint(staff_wallet, 256).end_cell().begin_parse())
+      .store_ref(metadata)
+      .end_cell();
+    
+    tip_history~udict_set(64, tip_id, updated_tip_data);
+  }
+  
+  ;; Emit settlement event
+  emit_log("tip_settled", [tip_id, tip_amount, net_amount], []);
+}
+
+;; Manually settle specific tip
+() settle_tip(int sender, int tip_id) impure inline {
+  throw_unless(401, equal_slices(sender, admin_address));
+  
+  (cell tip_data, int found) = tip_history.udict_get?(64, tip_id);
+  throw_unless(500, found);
+  
+  slice tip_slice = tip_data.begin_parse();
+  int tip_amount = tip_slice~load_uint(256);
+  int timestamp = tip_slice~load_uint(64);
+  int status = tip_slice~load_uint(32);
+  
+  throw_unless(501, status == 1);  ;; Must be pending
+  
+  auto_settle_tip(tip_id, tip_amount);
+}
+
+;; Cancel tip (refund to customer)
+() cancel_tip(int sender, int tip_id) impure inline {
+  throw_unless(401, equal_slices(sender, admin_address));
+  
+  (cell tip_data, int found) = tip_history.udict_get?(64, tip_id);
+  throw_unless(500, found);
+  
+  slice tip_slice = tip_data.begin_parse();
+  int tip_amount = tip_slice~load_uint(256);
+  int timestamp = tip_slice~load_uint(64);
+  int status = tip_slice~load_uint(32);
+  slice customer_addr = tip_slice~load_msg_addr();
+  
+  throw_unless(501, status == 1);  ;; Must be pending
+  
+  ;; Refund to customer
+  send_raw_message(begin_cell()
+    .store_uint(0x18, 6)
+    .store_slice(customer_addr)
+    .store_coins(tip_amount)
+    .store_uint(0, 107)
+    .end_cell(), 1);
+  
+  ;; Update tip status
+  cell updated_tip_data = begin_cell()
+    .store_uint(tip_amount, 256)
+    .store_uint(now(), 64)
+    .store_uint(4, 32)  ;; Cancelled status
+    .store_slice(customer_addr)
+    .store_ref(tip_slice~load_ref())
+    .end_cell();
+  
+  tip_history~udict_set(64, tip_id, updated_tip_data);
+  
+  ;; Emit cancellation event
+  emit_log("tip_cancelled", [tip_id, tip_amount], [customer_addr]);
+}
+
+;; Verify staff member
+() verify_staff(int query_id) impure inline {
+  cell verification_data = begin_cell()
+    .store_uint(1, 1)  ;; Verified status
+    .store_uint(staff_id, 32)
+    .store_uint(merchant_id, 32)
+    .store_uint(kyc_verified, 1)
+    .end_cell();
+  
+  send_raw_message(begin_cell()
+    .store_uint(0x18, 6)
+    .store_slice(begin_cell().store_uint(admin_address, 256).end_cell().begin_parse())
+    .store_coins(0)
+    .store_uint(0, 107)
+    .store_ref(begin_cell()
+      .store_uint(0xFFFFFFFF, 32)
+      .store_uint(query_id, 64)
+      .store_ref(verification_data)
+      .end_cell())
+    .end_cell(), 64);
+}
+
+;; Update staff member information
+() update_staff_info(int sender, cell new_staff_info) impure inline {
+  throw_unless(401, equal_slices(sender, admin_address));
+  throw_if(403, paused);
+  
+  staff_info = new_staff_info;
+  
+  ;; Update wallet addresses if changed
+  slice info_slice = new_staff_info.begin_parse();
+  int new_staff_wallet = info_slice~load_uint(256);
+  int new_merchant_wallet = info_slice~load_uint(256);
+  
+  staff_wallet = new_staff_wallet;
+  merchant_wallet = new_merchant_wallet;
+  
+  ;; Emit update event
+  emit_log("staff_info_updated", [staff_id], [new_staff_info]);
+}
+
+;; Emergency pause
+() emergency_pause(int sender) impure inline {
+  throw_unless(401, equal_slices(sender, admin_address));
+  
+  paused = true;
+  
+  ;; Emit pause event
+  emit_log("tip_contract_paused", [staff_id], []);
+}
+
+;; Unpause contract
+() unpause(int sender) impure inline {
+  throw_unless(401, equal_slices(sender, admin_address));
+  
+  paused = false;
+  
+  ;; Emit unpause event
+  emit_log("tip_contract_unpaused", [staff_id], []);
+}
+
+;; Bulk tip settlement
+() bulk_tip_settlement(int sender, cell tip_ids_cell) impure inline {
+  throw_unless(401, equal_slices(sender, admin_address));
+  
+  slice ids_slice = tip_ids_cell.begin_parse();
+  int count = ids_slice~load_uint(32);
+  
+  for (int i = 0; i < count; i++) {
+    int tip_id = ids_slice~load_uint(64);
+    settle_tip(sender, tip_id);
+  }
+  
+  ;; Emit bulk settlement event
+  emit_log("bulk_tip_settlement", [staff_id, count], [tip_ids_cell]);
+}
+
+;; Helper functions
+
+;; Validate daily transaction limits
+() validate_daily_limits() impure inline {
+  int current_day = now() / DAILY_RESET_TIME;
+  
+  if (current_day > last_reset_date) {
+    current_daily_volume = 0;
+    last_reset_date = current_day;
+  }
+  
+  throw_unless(502, current_daily_volume < transaction_limit);
+}
+
+;; Update customer statistics
+() update_customer_stats(slice customer_addr, int tip_amount) impure inline {
+  int customer_key = address_to_int(customer_addr);
+  
+  (cell stats, int found) = user_stats.udict_get?(256, customer_key);
+  
+  int total_tips = 0;
+  int tip_frequency = 0;
+  int average_tip = 0;
+  
+  if (found) {
+    slice stats_slice = stats.begin_parse();
+    total_tips = stats_slice~load_uint(256);
+    tip_frequency = stats_slice~load_uint(32);
+    average_tip = stats_slice~load_uint(256);
+  }
+  
+  total_tips += tip_amount;
+  tip_frequency += 1;
+  average_tip = total_tips / tip_frequency;
+  
+  cell updated_stats = begin_cell()
+    .store_uint(total_tips, 256)
+    .store_uint(tip_frequency, 32)
+    .store_uint(average_tip, 256)
+    .end_cell();
+  
+  user_stats~udict_set(256, customer_key, updated_stats);
+}
+
+;; Convert address to integer
+int address_to_int(slice address) impure inline {
+  return address~load_uint(256);
+}
+
+;; Emit log event
+() emit_log(int event_type, list<int> int_params, list<cell> cell_params) impure inline {
+  cell log_data = begin_cell()
+    .store_uint(event_type, 32)
+    .store_uint(now(), 64);
+    
+  foreach (int param in int_params) {
+    log_data = log_data.store_uint(param, 256);
+  }
+  
+  foreach (cell param in cell_params) {
+    log_data = log_data.store_ref(param);
+  }
+  
+  emit(log_data);
+}
+
+;; External methods
+
+;; Get staff verification status
+(int) verify_staff(slice wallet, int merchant_id_param) method_id {
+  if (merchant_id == merchant_id_param) {
+    return kyc_verified ? 1 : 0;
+  }
+  return 0;
+}
+
+;; Get tip statistics
+(cell) get_tip_statistics() method_id {
+  return begin_cell()
+    .store_uint(total_tips_received, 256)
+    .store_uint(tip_count, 32)
+    .store_uint(current_daily_volume, 32)
+    .store_uint(last_reset_date, 32)
+    .end_cell();
+}
+
+;; Get tip settings
+(cell) get_tip_settings() method_id {
+  return tip_settings;
+}
+
+;; Check if contract is paused
+(int) is_paused() method_id {
+  return paused;
+}

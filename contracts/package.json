@@ -1,0 +1,40 @@
+{
+  "name": "@ton-business/contracts",
+  "version": "1.0.0",
+  "description": "TON smart contracts for TON Business Suite",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build:all": "npm run build:loyalty-token && npm run build:payment-escrow && npm run build:tip-transfer && npm run build:cross-merchant",
+    "build:loyalty-token": "func contracts/loyalty-token.fc -o dist/loyalty-token.boc",
+    "build:payment-escrow": "func contracts/payment-escrow.fc -o dist/payment-escrow.boc",
+    "build:tip-transfer": "func contracts/instant-tip-transfer.fc -o dist/instant-tip-transfer.boc",
+    "build:cross-merchant": "func contracts/cross-merchant-registry.fc -o dist/cross-merchant-registry.boc",
+    "test": "jest --passWithNoTests",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "lint": "eslint contracts/**/*.fc",
+    "lint:fix": "eslint contracts/**/*.fc --fix",
+    "deploy:testnet": "npm run build:all && ton-cli deploy dist/loyalty-token.boc --testnet",
+    "deploy:mainnet": "npm run build:all && ton-cli deploy dist/loyalty-token.boc --mainnet",
+    "verify:contracts": "npm run build:all && npm run test"
+  },
+  "dependencies": {
+    "@ton-business/types": "*",
+    "@ton-business/utils": "*",
+    "winston": "^3.10.0",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.5.0",
+    "@types/jest": "^29.5.3",
+    "typescript": "^5.1.6",
+    "jest": "^29.6.1",
+    "ts-jest": "^29.1.1",
+    "eslint": "^8.45.0"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  }
+}
