@@ -34,7 +34,15 @@
     "docker:up": "docker-compose up -d",
     "docker:down": "docker-compose down",
     "deploy:testnet": "npm run deploy:contracts:testnet && npm run deploy:services:testnet",
-    "deploy:mainnet": "npm run deploy:contracts:mainnet && npm run deploy:services:mainnet"
+    "deploy:mainnet": "npm run deploy:contracts:mainnet && npm run deploy:services:mainnet",
+    
+    "cicd": "./scripts/cicd-deploy.sh",
+    "cicd:test": "./scripts/cicd-deploy.sh test",
+    "cicd:build": "./scripts/cicd-deploy.sh build",
+    "cicd:github": "./scripts/cicd-deploy.sh deploy-github",
+    "cicd:vercel": "./scripts/cicd-deploy.sh deploy-vercel",
+    "setup:vercel": "./scripts/setup-vercel.sh",
+    "deploy:local": "npm run test && npm run build && ./scripts/cicd-deploy.sh deploy-vercel"
   },
   "devDependencies": {
     "@playwright/test": "^1.56.1",
