@@ -30,7 +30,8 @@ export VERCEL_TOKEN="$VERCEL_TOKEN"
 
 # Login to Vercel
 echo "🔐 Authenticating with Vercel..."
-vercel login --token="$VERCEL_TOKEN"
+export VERCEL_TOKEN="$VERCEL_TOKEN"
+# Note: Vercel token is set via environment variable, no explicit login needed
 
 # Create or link project
 echo "🏗️ Setting up project: $PROJECT_NAME"

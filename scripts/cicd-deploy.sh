@@ -57,7 +57,7 @@ authenticate() {
     echo "$GITHUB_TOKEN" | gh auth login --with-token > /dev/null 2>&1
     log_info "✅ GitHub authenticated"
     
-    # Set Vercel token
+    # Set Vercel token environment
     export VERCEL_TOKEN="$VERCEL_TOKEN"
     log_info "✅ Vercel token configured"
 }
